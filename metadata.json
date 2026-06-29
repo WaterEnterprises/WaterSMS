@@ -1,0 +1,6 @@
+{
+  "name": "Water SMS",
+  "description": "Send SMS messages in bulk with AI rewriting, custom delays, and background scheduling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

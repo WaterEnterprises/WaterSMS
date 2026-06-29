@@ -1,0 +1,224 @@
+name: Build & Release WaterSMS
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Override version name (e.g., 1.1.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  JAVA_VERSION: "21"
+  JAVA_DISTRIBUTION: "temurin"
+  GRADLE_VERSION: "9.3.1"
+
+jobs:
+  validate:
+    name: Validate & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: "gradle"
+
+      - name: Grant Gradle Execute Permission
+        run: chmod +x gradlew
+
+      - name: Run Lint Checks
+        run: ./gradlew lintDebug --no-configuration-cache
+
+      - name: Upload Lint Report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-*.html
+          retention-days: 7
+
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: "gradle"
+
+      - name: Grant Gradle Execute Permission
+        run: chmod +x gradlew
+
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --no-configuration-cache
+
+      - name: Upload Test Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: app/build/reports/tests/**
+          retention-days: 14
+
+  build-release:
+    name: Build Release APK & AAB
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: "gradle"
+
+      - name: Grant Gradle Execute Permission
+        run: chmod +x gradlew
+
+      - name: Set Version Name
+        if: github.event_name == 'workflow_dispatch' && inputs.version_name != ''
+        run: echo "VERSION_NAME=${{ inputs.version_name }}" >> $GITHUB_ENV
+
+      - name: Decode Keystore & Set Signing Env
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Only decode if secret is provided (for PRs from forks, it won't be)
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > app/keystore.jks
+            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/app/keystore.jks" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          else
+            echo "No keystore secret available — building unsigned (PR from fork)."
+          fi
+
+      - name: Extract Version
+        run: |
+          VERSION=$(grep '^VERSION_NAME=' app/version.properties | cut -d= -f2)
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Building WaterSMS v$VERSION"
+
+      - name: Build Release Artifacts
+        run: |
+          ./gradlew assembleRelease bundleRelease --no-configuration-cache
+          echo "Build complete. Listing outputs:"
+          find app/build/outputs -name "*.apk" -o -name "*.aab" 2>/dev/null
+
+      - name: List APK Outputs
+        run: |
+          echo "=== APK Outputs ==="
+          find app/build/outputs/apk -type f -name "*.apk" 2>/dev/null || echo "No APK files found"
+          echo "=== Bundle Outputs ==="
+          find app/build/outputs/bundle -type f -name "*.aab" 2>/dev/null || echo "No AAB files found"
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: watersms-release
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+            app/build/outputs/mapping/release/*.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload Debug APK (for quick testing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: watersms-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+          retention-days: 14
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Date-Based Tag
+        id: tag
+        run: |
+          echo "release_tag=v$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Download Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: watersms-release
+          path: release-artifacts
+
+      - name: List Downloaded Artifacts
+        run: ls -lh release-artifacts/
+
+      - name: Extract App Version
+        id: version
+        run: |
+          VERSION=$(grep '^VERSION_NAME=' app/version.properties | cut -d= -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          COMMITS=$(git log --oneline --no-decorate $(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~10)..HEAD 2>/dev/null || echo "Initial release")
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "notes<<$EOF" >> $GITHUB_OUTPUT
+          echo "## WaterSMS v${{ steps.version.outputs.version }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### 📦 Downloads" >> $GITHUB_OUTPUT
+          echo "- **Universal APK** \`WaterSMS-release-universal-*.apk\` — works on all devices" >> $GITHUB_OUTPUT
+          echo "- **Split APKs** \`WaterSMS-release-{abi}-*.apk\` — device-optimized per ABI" >> $GITHUB_OUTPUT
+          echo "- **Android App Bundle** \`WaterSMS-release-*.aab\` — for Play Store upload" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### 🚀 Features" >> $GITHUB_OUTPUT
+          echo "- **AI Message Paraphraser** — Google Gemini generates 20 unique variations per campaign" >> $GITHUB_OUTPUT
+          echo "- **Bulk SMS Engine** — Randomized delays, pause/resume/cancel, foreground service" >> $GITHUB_OUTPUT
+          echo "- **Multi-Channel Contact Import** — Device contacts, CSV paste, E.164 formatting" >> $GITHUB_OUTPUT
+          echo "- **Analytics Dashboard** — Delivery telemetry, success/failure ratios" >> $GITHUB_OUTPUT
+          echo "- **Premium UI** — Dark glass-morphic design with Material 3" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### 🔧 Changelog" >> $GITHUB_OUTPUT
+          echo '```' >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo '```' >> $GITHUB_OUTPUT
+          echo "$EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: WaterSMS v${{ steps.version.outputs.version }} — ${{ steps.tag.outputs.release_tag }}
+          body: ${{ steps.notes.outputs.notes }}
+          files: release-artifacts/*
+          fail_on_unmatched_files: false
+          generate_release_notes: false
