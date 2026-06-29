@@ -188,8 +188,7 @@ jobs:
           echo "## WaterSMS v${{ steps.version.outputs.version }}" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_OUTPUT
           echo "### 📦 Downloads" >> $GITHUB_OUTPUT
-          echo "- **Universal APK** \`WaterSMS-release-universal-*.apk\` — works on all devices" >> $GITHUB_OUTPUT
-          echo "- **Split APKs** \`WaterSMS-release-{abi}-*.apk\` — device-optimized per ABI" >> $GITHUB_OUTPUT
+          echo "- **Universal APK** \`WaterSMS-release-*.apk\` — works on all devices" >> $GITHUB_OUTPUT
           echo "- **Android App Bundle** \`WaterSMS-release-*.aab\` — for Play Store upload" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_OUTPUT
           echo "### 🚀 Features" >> $GITHUB_OUTPUT
