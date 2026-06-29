@@ -148,19 +148,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-      - name: Upload Debug APK (for quick testing)
-        uses: actions/upload-artifact@v7
-        with:
-          name: watersms-debug
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
-          retention-days: 14
-
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: build-release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
