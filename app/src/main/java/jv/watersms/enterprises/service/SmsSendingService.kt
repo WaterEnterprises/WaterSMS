@@ -1,6 +1,5 @@
 package jv.watersms.enterprises.service
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
@@ -16,6 +15,7 @@ import android.os.IBinder
 import android.telephony.SmsManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import jv.watersms.enterprises.MainActivity
 import jv.watersms.enterprises.R
 import jv.watersms.enterprises.data.AppDatabase
@@ -81,7 +81,12 @@ class SmsSendingService : Service() {
         repository = CampaignRepository(database.campaignDao())
 
         // Register SMS sent receiver
-        registerSmsReceiver()
+        ContextCompat.registerReceiver(
+            this,
+            smsSentReceiver,
+            IntentFilter(SMS_SENT_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         createNotificationChannel()
     }
@@ -314,16 +319,6 @@ class SmsSendingService : Service() {
 
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(COMPLETION_NOTIFICATION_ID, notification)
-        }
-    }
-
-    @SuppressLint("UnspecifiedRegisterReceiverFlag")
-    private fun registerSmsReceiver() {
-        val filter = IntentFilter(SMS_SENT_ACTION)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(smsSentReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(smsSentReceiver, filter)
         }
     }
 
