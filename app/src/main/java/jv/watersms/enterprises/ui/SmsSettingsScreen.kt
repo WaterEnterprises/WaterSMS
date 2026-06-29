@@ -1,7 +1,10 @@
 package jv.watersms.enterprises.ui
 
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -45,6 +48,28 @@ fun SmsSettingsScreen(
                 ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             } else true
         )
+    }
+
+    val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+    var isBatteryExempted by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                powerManager.isIgnoringBatteryOptimizations(context.packageName)
+            } else true
+        )
+    }
+
+    // Refresh exemption status after returning from system settings
+    val batterySettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        // Re-check exemption status after returning from settings
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+            if (isBatteryExempted != pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                isBatteryExempted = pm.isIgnoringBatteryOptimizations(context.packageName)
+            }
+        }
     }
 
     val smsPermissionLauncher = rememberLauncherForActivityResult(
@@ -347,6 +372,112 @@ fun SmsSettingsScreen(
                         title = "List Sanitization",
                         desc = "Double-check phone numbers are in E.164 format (e.g. +1234567890) and names are correct before blasting campaigns."
                     )
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Battery",
+                            tint = if (isBatteryExempted) Color(0xFF4CAF50) else Color(0xFFFFA726),
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Text(
+                            text = "Battery Optimization Exemption",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
+                    Text(
+                        text = "Android aggressively backgrounds services on most OEM ROMs (Xiaomi, Huawei, Samsung, OnePlus, Oppo). Without battery exemption, the SMS sending service may be killed within minutes of the screen turning off.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Surface(
+                        color = if (isBatteryExempted)
+                            Color(0xFF4CAF50).copy(alpha = 0.12f)
+                        else
+                            Color(0xFFFFA726).copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                if (isBatteryExempted) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (isBatteryExempted) Color(0xFF4CAF50) else Color(0xFFFFA726),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Column {
+                                Text(
+                                    if (isBatteryExempted) "Exempted from Battery Optimization" else "Battery Optimization Active",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isBatteryExempted) Color(0xFF4CAF50) else Color(0xFFFFA726)
+                                )
+                                Text(
+                                    if (isBatteryExempted) "The SMS service can run reliably in the background." else "The system may kill the service to save power.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (!isBatteryExempted) {
+                        Button(
+                            onClick = {
+                                val intent = Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                                ).apply {
+                                    data = android.net.Uri.fromParts("package", context.packageName, null)
+                                }
+                                batterySettingsLauncher.launch(intent)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFFFA726).copy(alpha = 0.8f)
+                            )
+                        ) {
+                            Icon(
+                                Icons.Default.PowerSettingsNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Request Battery Exemption")
+                        }
+
+                        Text(
+                            text = "Tap the button above to allow the SMS service to run in the background. On some OEM ROMs (Xiaomi, Huawei, Samsung, OnePlus), you may also need to enable auto-start in the system's security app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
                 }
             }
         }

@@ -269,7 +269,26 @@ class SmsSendingService : Service() {
         }
     }
 
+    /**
+     * Returns true if the app is allowed to post notifications.
+     *
+     * On API 33+ this checks the POST_NOTIFICATIONS runtime permission.
+     * On older versions notifications are always allowed if the channel exists.
+     *
+     * Note: foreground services started via [startForeground] do NOT need
+     * this check — only explicit [NotificationManager.notify] calls do.
+     */
+    private fun canPostNotifications(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
     private fun updateNotificationAndProgress(customText: String? = null) {
+        if (!canPostNotifications()) return
         serviceScope.launch {
             val campaign = repository.getCampaignById(activeCampaignId) ?: return@launch
             val stats = repository.getCampaignStats(activeCampaignId)
@@ -286,6 +305,7 @@ class SmsSendingService : Service() {
     }
 
     private fun showCompletionNotification() {
+        if (!canPostNotifications()) return
         serviceScope.launch {
             val campaign = repository.getCampaignById(activeCampaignId) ?: return@launch
             val stats = repository.getCampaignStats(activeCampaignId)
