@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.telephony.TelephonyManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -83,6 +84,15 @@ fun SmsSettingsScreen(
         if (granted) viewModel.loadDeviceContacts()
     }
 
+    val notificationsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> hasNotificationsPermission = granted }
+
+    // Compute SMS capability diagnostic — re-checked when screen recomposes
+    val smsDiagnostic = remember(hasSmsPermission) {
+        computeSmsDiagnostic(context, hasSmsPermission)
+    }
+
     val defaultRegion by viewModel.defaultRegion.collectAsState()
 
     LazyColumn(
@@ -146,7 +156,7 @@ fun SmsSettingsScreen(
                         title = "Push Notifications Permission",
                         description = "Provides live update badges of ongoing send tasks",
                         isGranted = hasNotificationsPermission,
-                        onRequest = {}
+                        onRequest = { notificationsPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
                     )
 
                     HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
@@ -252,6 +262,10 @@ fun SmsSettingsScreen(
                     )
                 }
             }
+        }
+
+        item {
+            SmsDiagnosticCard(diagnostic = smsDiagnostic)
         }
 
         item {
@@ -563,6 +577,216 @@ fun ComplianceTipRow(
                 text = desc,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+// ──────────────────────────────────────────────
+// SMS Pre-flight Diagnostic
+// ──────────────────────────────────────────────
+
+/**
+ * Result of a pre-flight SMS capability check.
+ */
+data class SmsDiagnosticResult(
+    val telephonyHardware: Boolean,
+    val simStateLabel: String,
+    val isSimReady: Boolean,
+    val isSmsCapable: Boolean,
+    val isSmsPermissionGranted: Boolean,
+    val isReady: Boolean
+)
+
+/**
+ * Queries device telephony state to determine whether SMS sending
+ * should be possible on this device.
+ */
+private fun computeSmsDiagnostic(
+    context: android.content.Context,
+    hasSmsPermission: Boolean
+): SmsDiagnosticResult {
+    val pm = context.packageManager
+    val telephonyHardware = pm.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
+
+    val tm = context.getSystemService(android.content.Context.TELEPHONY_SERVICE) as? TelephonyManager
+
+    val simState = tm?.simState ?: TelephonyManager.SIM_STATE_UNKNOWN
+    val simStateLabel = when (simState) {
+        TelephonyManager.SIM_STATE_READY -> "Ready"
+        TelephonyManager.SIM_STATE_ABSENT -> "No SIM"
+        TelephonyManager.SIM_STATE_PIN_REQUIRED -> "Locked (PIN)"
+        TelephonyManager.SIM_STATE_PUK_REQUIRED -> "Locked (PUK)"
+        TelephonyManager.SIM_STATE_NETWORK_LOCKED -> "Network Locked"
+        TelephonyManager.SIM_STATE_NOT_READY -> "Not Ready"
+        TelephonyManager.SIM_STATE_PERM_DISABLED -> "Permanently Disabled"
+        TelephonyManager.SIM_STATE_CARD_IO_ERROR -> "I/O Error"
+        TelephonyManager.SIM_STATE_CARD_RESTRICTED -> "Restricted"
+        else -> "Unknown"
+    }
+    val isSimReady = simState == TelephonyManager.SIM_STATE_READY
+
+    val isSmsCapable = tm?.isSmsCapable ?: false
+
+    val isReady = telephonyHardware && isSimReady && isSmsCapable && hasSmsPermission
+
+    return SmsDiagnosticResult(
+        telephonyHardware = telephonyHardware,
+        simStateLabel = simStateLabel,
+        isSimReady = isSimReady,
+        isSmsCapable = isSmsCapable,
+        isSmsPermissionGranted = hasSmsPermission,
+        isReady = isReady
+    )
+}
+
+@Composable
+fun SmsDiagnosticCard(diagnostic: SmsDiagnosticResult) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+        ),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                listOf(
+                    if (diagnostic.isReady) Color(0xFF4CAF50).copy(alpha = 0.3f)
+                    else Color(0xFFF87171).copy(alpha = 0.3f),
+                    Color.Transparent
+                )
+            )
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.Radio,
+                    contentDescription = "Diagnostic",
+                    tint = if (diagnostic.isReady) Color(0xFF4CAF50) else Color(0xFFF87171),
+                    modifier = Modifier.size(22.dp)
+                )
+                Text(
+                    text = "SMS Pre-flight Check",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Surface(
+                    color = if (diagnostic.isReady)
+                        Color(0xFF4CAF50).copy(alpha = 0.15f)
+                    else
+                        Color(0xFFF87171).copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = if (diagnostic.isReady) "READY" else "ISSUES DETECTED",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = if (diagnostic.isReady) Color(0xFF4CAF50) else Color(0xFFF87171),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            DiagnosticCheckRow(
+                label = "Telephony Hardware",
+                passed = diagnostic.telephonyHardware
+            )
+            DiagnosticCheckRow(
+                label = "SIM Card State",
+                passed = diagnostic.isSimReady,
+                detail = diagnostic.simStateLabel
+            )
+            DiagnosticCheckRow(
+                label = "SMS Provisioned",
+                passed = diagnostic.isSmsCapable
+            )
+            DiagnosticCheckRow(
+                label = "SEND_SMS Permission",
+                passed = diagnostic.isSmsPermissionGranted
+            )
+
+            if (!diagnostic.isReady) {
+                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                val tips = buildList {
+                    if (!diagnostic.telephonyHardware) {
+                        add("This device lacks a cellular modem — SMS sending is not possible on tablets or Wi-Fi-only devices.")
+                    }
+                    if (!diagnostic.isSimReady) {
+                        add("No SIM card detected or the SIM is not ready. Insert a working SIM with an active SMS plan.")
+                    }
+                    if (!diagnostic.isSmsCapable) {
+                        add("The SIM or device is not provisioned for SMS. Contact your carrier to enable SMS on this line.")
+                    }
+                    if (!diagnostic.isSmsPermissionGranted) {
+                        add("Enable the SEND_SMS permission above for this app to send text messages.")
+                    }
+                }
+                tips.forEach { tip ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            Icons.Default.Info,
+                            contentDescription = "Tip",
+                            tint = Color(0xFFFFA726),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = tip,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DiagnosticCheckRow(
+    label: String,
+    passed: Boolean,
+    detail: String? = null
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(
+                if (passed) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                contentDescription = if (passed) "Pass" else "Fail",
+                tint = if (passed) Color(0xFF4CAF50) else Color(0xFFF87171),
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White
+            )
+        }
+        if (detail != null) {
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = if (passed) FontWeight.Normal else FontWeight.Bold
             )
         }
     }

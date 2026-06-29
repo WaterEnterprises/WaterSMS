@@ -4,7 +4,6 @@ plugins {
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
-  alias(libs.plugins.google.services)
   alias(libs.plugins.hilt.android)
 }
 
@@ -36,7 +35,7 @@ val appVersion: String by lazy { resolveAppVersion() }
 
 android {
   namespace = "jv.watersms.enterprises"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  compileSdk = 36
 
   defaultConfig {
     applicationId = "jv.watersms.enterprises"
@@ -144,16 +143,11 @@ secrets {
   defaultPropertiesFileName = ".env.example"
 }
 
-googleServices {
-  missingGoogleServicesStrategy = com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy.WARN
-}
-
 
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
-  implementation(platform(libs.firebase.bom))
   // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
   // implementation(libs.androidx.camera.camera2)
@@ -176,8 +170,7 @@ dependencies {
   implementation(libs.androidx.room.runtime)
   // implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
-  implementation(libs.firebase.ai)
-  implementation(libs.firebase.appcheck.recaptcha)
+
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.logging.interceptor)
@@ -207,4 +200,5 @@ dependencies {
   implementation(libs.hilt.android)
   "ksp"(libs.hilt.compiler)
   implementation(libs.hilt.navigation.compose)
+  implementation(libs.cloudhopper.charset)
 }

@@ -5,9 +5,12 @@ param(
 $ErrorActionPreference = "Stop"
 $PackageName = "jv.watersms.enterprises"
 $LauncherActivity = "jv.watersms.enterprises/.MainActivity"
-$ApkPath = Join-Path $PSScriptRoot "app\build\outputs\apk\debug\app-universal-debug.apk"
+$ApkPath = Join-Path $PSScriptRoot "app\build\outputs\apk\debug\app-debug.apk"
 
 if (-not $NoBuild) {
+  Write-Host "[0/3] Stopping stale Gradle daemon..." -ForegroundColor Cyan
+  & ./gradlew --stop 2>&1 | Out-Null
+
   Write-Host "[1/3] Building APK..." -ForegroundColor Cyan
   Push-Location $PSScriptRoot
   try {

@@ -12,12 +12,13 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.telephony.SmsManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import jv.watersms.enterprises.MainActivity
-import jv.watersms.enterprises.R
 import jv.watersms.enterprises.data.AppDatabase
 import jv.watersms.enterprises.data.CampaignRepository
 import jv.watersms.enterprises.data.Recipient
@@ -30,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import jv.watersms.enterprises.util.Gsm7Helper
 import kotlin.random.Random
 
 class SmsSendingService : Service() {
@@ -51,11 +53,13 @@ class SmsSendingService : Service() {
                     val status = if (resultCode == Activity.RESULT_OK) "SENT" else "FAILED"
                     val errorMsg = when (resultCode) {
                         Activity.RESULT_OK -> null
-                        SmsManager.RESULT_ERROR_GENERIC_FAILURE -> "Generic Failure"
-                        SmsManager.RESULT_ERROR_NO_SERVICE -> "No Service"
-                        SmsManager.RESULT_ERROR_NULL_PDU -> "Null PDU"
-                        SmsManager.RESULT_ERROR_RADIO_OFF -> "Radio Off"
-                        else -> "Failed: $resultCode"
+                        SmsManager.RESULT_ERROR_GENERIC_FAILURE -> diagnoseGenericFailure(context)
+                        SmsManager.RESULT_ERROR_NO_SERVICE -> "No cellular service — check signal"
+                        SmsManager.RESULT_ERROR_NULL_PDU -> "Null PDU — invalid message format"
+                        SmsManager.RESULT_ERROR_RADIO_OFF -> "Radio off — enable mobile network"
+                        124 -> "Carrier rejected message (code 124) — message too long or rate-limited"
+                        134 -> "Carrier rejected message (code 134) — SMS service not provisioned"
+                        else -> "Carrier error $resultCode — check SIM, balance, and recipient number"
                     }
                     serviceScope.launch(Dispatchers.IO) {
                         repository.getRecipientsForCampaign(activeCampaignId)
@@ -188,6 +192,38 @@ class SmsSendingService : Service() {
     private suspend fun sendSmsToRecipient(recipient: Recipient) {
         val campaign = repository.getCampaignById(activeCampaignId) ?: return
 
+        // Validate phone number format before sending
+        if (!isValidPhoneNumber(recipient.phoneNumber)) {
+            Log.w("SmsSendingService", "Invalid phone number format: ${recipient.phoneNumber}")
+            repository.updateRecipient(
+                recipient.copy(
+                    status = "FAILED",
+                    errorMessage = "Invalid phone number: ${recipient.phoneNumber}",
+                    sentAt = System.currentTimeMillis()
+                )
+            )
+            updateNotificationAndProgress()
+            return
+        }
+
+        // Re-check SEND_SMS permission at runtime (user may have revoked it via system settings)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val hasSmsPermission = checkSelfPermission(android.Manifest.permission.SEND_SMS) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!hasSmsPermission) {
+                Log.e("SmsSendingService", "SEND_SMS permission revoked at runtime")
+                repository.updateRecipient(
+                    recipient.copy(
+                        status = "FAILED",
+                        errorMessage = "SEND_SMS permission not granted",
+                        sentAt = System.currentTimeMillis()
+                    )
+                )
+                updateNotificationAndProgress()
+                return
+            }
+        }
+
         // Decode variations
         val variations = decodeVariations(campaign.variationsJson)
         val textToSend = if (variations.isNotEmpty()) {
@@ -219,7 +255,30 @@ class SmsSendingService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
             )
 
-            smsManager.sendTextMessage(recipient.phoneNumber, null, textToSend, sentIntent, null)
+            // Truncate to single-segment SMS limit (160 GSM-7 or 70 UCS-2) to avoid carrier rejection of multipart SMS
+            val finalText = Gsm7Helper.prepareForSending(textToSend)
+            if (finalText != textToSend) {
+                Log.w("SmsSendingService", "Message truncated from ${textToSend.length} to ${finalText.length} chars for ${recipient.phoneNumber}")
+            }
+
+            // Split long messages into multipart SMS parts to avoid Generic Failure on carriers
+            val messageParts = smsManager.divideMessage(finalText)
+            if (messageParts.size > 1) {
+                val sentIntents = ArrayList(messageParts.indices.map { index ->
+                    PendingIntent.getBroadcast(
+                        this,
+                        recipient.id.toInt() + index,  // unique request code per part
+                        Intent(SMS_SENT_ACTION).apply {
+                            putExtra(EXTRA_RECIPIENT_ID, recipient.id)
+                            setPackage(packageName)
+                        },
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                    )
+                })
+                smsManager.sendMultipartTextMessage(recipient.phoneNumber, null, messageParts, sentIntents, null)
+            } else {
+                smsManager.sendTextMessage(recipient.phoneNumber, null, textToSend, sentIntent, null)
+            }
         } catch (e: Exception) {
             Log.e("SmsSendingService", "Error sending SMS to ${recipient.phoneNumber}", e)
             repository.updateRecipient(
@@ -231,6 +290,77 @@ class SmsSendingService : Service() {
             )
             updateNotificationAndProgress()
         }
+    }
+
+    /**
+     * Checks whether a phone number is in a sendable format.
+     *
+     * Must be non-blank, start with '+' (E.164), and have between 5 and 15 digits.
+     */
+    /**
+     * Runs device diagnostics when a GENERIC_FAILURE is received and returns
+     * an actionable error message pinpointing the likely cause.
+     *
+     * Checks performed:
+     * - Airplane mode
+     * - SIM card state
+     * - SMS capability on the device
+     */
+    private fun diagnoseGenericFailure(context: Context?): String {
+        val findings = mutableListOf<String>()
+
+        context?.let { ctx ->
+            // 1. Check Airplane mode
+            val isAirplaneModeOn = try {
+                Settings.Global.getInt(ctx.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+            } catch (_: SecurityException) {
+                false
+            }
+            if (isAirplaneModeOn) {
+                findings.add("Device is in Airplane mode — turn it off to send SMS")
+            }
+
+            // 2. Check SIM card state
+            val telephonyManager = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            val simState = telephonyManager?.simState ?: TelephonyManager.SIM_STATE_UNKNOWN
+            when (simState) {
+                TelephonyManager.SIM_STATE_ABSENT ->
+                    findings.add("No SIM card detected — insert a SIM card")
+                TelephonyManager.SIM_STATE_PIN_REQUIRED ->
+                    findings.add("SIM card is locked with a PIN — unlock it in Settings")
+                TelephonyManager.SIM_STATE_PUK_REQUIRED ->
+                    findings.add("SIM card is locked with a PUK code — contact your carrier")
+                TelephonyManager.SIM_STATE_NETWORK_LOCKED ->
+                    findings.add("SIM card is network-locked — contact your carrier")
+                TelephonyManager.SIM_STATE_NOT_READY ->
+                    findings.add("SIM card is not ready — wait a moment or restart the device")
+                TelephonyManager.SIM_STATE_PERM_DISABLED ->
+                    findings.add("SIM card is permanently disabled — contact your carrier")
+                TelephonyManager.SIM_STATE_CARD_IO_ERROR ->
+                    findings.add("SIM card I/O error — try cleaning or reseating the SIM")
+                TelephonyManager.SIM_STATE_CARD_RESTRICTED ->
+                    findings.add("SIM card is restricted — contact your carrier")
+                // SIM_STATE_READY and SIM_STATE_LOADED are fine
+            }
+
+            // 3. Check if device has SMS capability
+            if (telephonyManager?.isSmsCapable == false) {
+                findings.add("This device does not support SMS — use a device with cellular service")
+            }
+        }
+
+        return if (findings.isNotEmpty()) {
+            findings.joinToString("; ")
+        } else {
+            "Generic failure — check: SMS center number configured, sufficient account balance, and recipient number is valid"
+        }
+    }
+
+    private fun isValidPhoneNumber(phone: String): Boolean {
+        if (phone.isBlank()) return false
+        if (!phone.startsWith("+")) return false
+        val digitCount = phone.count { it.isDigit() }
+        return digitCount in 5..15
     }
 
     private fun decodeVariations(json: String): List<String> {

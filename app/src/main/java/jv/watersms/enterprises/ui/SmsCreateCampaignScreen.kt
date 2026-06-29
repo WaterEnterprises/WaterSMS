@@ -22,9 +22,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import jv.watersms.enterprises.util.Gsm7Helper
 
 @Composable
 fun SmsCreateCampaignScreen(
@@ -151,6 +153,28 @@ fun SmsCreateCampaignScreen(
                             unfocusedBorderColor = Color.White.copy(alpha = 0.15f)
                         )
                     )
+
+                    val isGsm7 = remember(originalMessage) { Gsm7Helper.isGsm7(originalMessage) }
+                    val maxChars = remember(isGsm7) { if (isGsm7) 160 else 70 }
+                    val isOverLimit = originalMessage.length > maxChars
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isGsm7) "GSM-7" else "UCS-2",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isGsm7) Color(0xFF9E9E9E) else Color(0xFFFFA726)
+                        )
+                        Text(
+                            text = "${originalMessage.length} / $maxChars",
+                            style = MaterialTheme.typography.labelSmall,
+                            textAlign = TextAlign.End,
+                            color = if (isOverLimit) Color(0xFFEF5350) else Color(0xFF9E9E9E)
+                        )
+                    }
                 }
             }
         }

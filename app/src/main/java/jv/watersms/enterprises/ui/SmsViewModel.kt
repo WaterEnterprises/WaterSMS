@@ -2,6 +2,7 @@ package jv.watersms.enterprises.ui
 
 import android.app.Application
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import androidx.lifecycle.viewModelScope
 import jv.watersms.enterprises.data.Campaign
@@ -208,7 +209,12 @@ class SmsViewModel @Inject constructor(
                     action = SmsSendingService.ACTION_START
                     putExtra(SmsSendingService.EXTRA_CAMPAIGN_ID, campaignId)
                 }
-                context.startService(intent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.startService(intent)
+                }
 
                 _selectedCampaignId.value = campaignId
 
@@ -235,7 +241,12 @@ class SmsViewModel @Inject constructor(
                     action = SmsSendingService.ACTION_START
                     putExtra(SmsSendingService.EXTRA_CAMPAIGN_ID, campaignId)
                 }
-                context.startService(intent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.startService(intent)
+                }
             }
         }
     }
