@@ -170,8 +170,12 @@ jobs:
           name: watersms-release
           path: release-artifacts
 
-      - name: List Downloaded Artifacts
-        run: ls -lh release-artifacts/
+      - name: Debug — List Downloaded Artifacts
+        run: |
+          echo "=== Files in release-artifacts/ ==="
+          find release-artifacts -type f 2>/dev/null || echo "No files found"
+          echo "=== Tree ==="
+          find release-artifacts -maxdepth 3 2>/dev/null | head -20
 
       - name: Extract App Version
         id: version
@@ -205,11 +209,24 @@ jobs:
           echo "$EOF" >> $GITHUB_OUTPUT
 
       - name: Create Release
+        id: create_release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
           name: WaterSMS v${{ steps.version.outputs.version }} — ${{ steps.tag.outputs.release_tag }}
           body: ${{ steps.notes.outputs.notes }}
-          files: release-artifacts/*
           fail_on_unmatched_files: false
           generate_release_notes: false
+
+      - name: Upload Release Assets
+        run: |
+          shopt -s nullglob
+          assets=(release-artifacts/*.apk release-artifacts/*.aab release-artifacts/*.txt)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No APK/AAB/TXT files found in release-artifacts/ — checking subdirectories..."
+            find release-artifacts -type f \( -name "*.apk" -o -name "*.aab" -o -name "*.txt" \) -exec gh release upload "${{ steps.tag.outputs.release_tag }}" {} --clobber \;
+          else
+            gh release upload "${{ steps.tag.outputs.release_tag }}" "${assets[@]}" --clobber
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
